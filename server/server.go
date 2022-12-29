@@ -4,10 +4,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
-	"os"
 	"sync"
 	"time"
 
@@ -23,8 +21,16 @@ type Server struct {
 	name                             string // Not required but useful if you want to name your server
 	port                             string // Not required but useful if your server needs to know what port it's listening to
 
+	isPrimary      bool
+	servers        []Server
 	incrementValue int64      // value that clients can increment.
 	mutex          sync.Mutex // used to lock the server to avoid race conditions.
+}
+
+// Connection to a secondary server
+type SecondaryServer struct {
+	Address string
+	Conn    *grpc.ClientConn
 }
 
 // flags are used to get arguments from the terminal. Flags take a value, a default value and a description of the flag.
@@ -73,12 +79,60 @@ func launchServer() {
 
 	gRPC.RegisterTemplateServer(grpcServer, server) //Registers the server to the gRPC server.
 
+	if server.isPrimary {
+		// List of secondary servers
+		secondaryServers := []SecondaryServer{
+			{Address: "localhost:5401"},
+			{Address: "localhost:5402"},
+			{Address: "localhost:5403"},
+		}
+		// Dial the secondary servers
+		conns, err := DialSecondaryServers(secondaryServers)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer func() {
+			for _, conn := range conns {
+				conn.Close()
+			}
+		}()
+	}
+
 	log.Printf("Server %s: Listening on port %s\n", *serverName, *port)
 
 	if err := grpcServer.Serve(list); err != nil {
 		log.Fatalf("failed to serve %v", err)
 	}
 	// code here is unreachable because grpcServer.Serve occupies the current thread.
+}
+
+// Dial a secondary server and return the connection
+func DialSecondaryServer(address string) (*grpc.ClientConn, error) {
+	// Set up a connection to the server
+	conn, err := grpc.Dial(address, grpc.WithInsecure())
+	if err != nil {
+		return nil, fmt.Errorf("could not connect to secondary server: %v", err)
+	}
+
+	return conn, nil
+}
+
+// Dial all secondary servers and return the connections
+func DialSecondaryServers(secondaryServers []SecondaryServer) ([]*grpc.ClientConn, error) {
+	conns := make([]*grpc.ClientConn, len(secondaryServers))
+
+	for i, server := range secondaryServers {
+		// Dial the secondary server
+		conn, err := DialSecondaryServer(server.Address)
+		if err != nil {
+			return nil, err
+		}
+
+		// Save the connection
+		conns[i] = conn
+	}
+
+	return conns, nil
 }
 
 // The method format can be found in the pb.go file. If the format is wrong, the server type will give an error.
@@ -92,44 +146,4 @@ func (s *Server) Increment(ctx context.Context, Amount *gRPC.Amount) (*gRPC.Ack,
 	// and returns the new value.
 	s.incrementValue += int64(Amount.GetValue())
 	return &gRPC.Ack{NewValue: s.incrementValue}, nil
-}
-
-func (s *Server) SayHi(msgStream gRPC.Template_SayHiServer) error {
-	for {
-		// get the next message from the stream
-		msg, err := msgStream.Recv()
-
-		// the stream is closed so we can exit the loop
-		if err == io.EOF {
-			break
-		}
-		// some other error
-		if err != nil {
-			return err
-		}
-		// log the message
-		log.Printf("Received message from %s: %s", msg.ClientName, msg.Message)
-	}
-
-	// be a nice server and say goodbye to the client :)
-	ack := &gRPC.Farewell{Message: "Goodbye"}
-	msgStream.SendAndClose(ack)
-
-	return nil
-}
-
-// sets the logger to use a log.txt file instead of the console
-func setLog() {
-	// Clears the log.txt file when a new server is started
-	if err := os.Truncate("log.txt", 0); err != nil {
-		log.Printf("Failed to truncate: %v", err)
-	}
-
-	// This connects to the log file/changes the output of the log informaiton to the log.txt file.
-	f, err := os.OpenFile("log.txt", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	if err != nil {
-		log.Fatalf("error opening file: %v", err)
-	}
-	defer f.Close()
-	log.SetOutput(f)
 }

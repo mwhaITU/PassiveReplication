@@ -94,9 +94,6 @@ func parseInput() {
 		//Convert string to int64, return error if the int is larger than 32bit or not a number
 		val, err := strconv.ParseInt(input, 10, 64)
 		if err != nil {
-			if input == "hi" {
-				sayHi()
-			}
 			continue
 		}
 		incrementVal(val)
@@ -125,28 +122,6 @@ func incrementVal(val int64) {
 		// but hopefully this will never be reached
 		fmt.Println("Oh no something went wrong :(")
 	}
-}
-
-func sayHi() {
-	// get a stream to the server
-	stream, err := server.SayHi(context.Background())
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	// send some messages to the server
-	stream.Send(&gRPC.Greeding{ClientName: *clientsName, Message: "Hi"})
-	stream.Send(&gRPC.Greeding{ClientName: *clientsName, Message: "How are you?"})
-	stream.Send(&gRPC.Greeding{ClientName: *clientsName, Message: "I'm fine, thanks."})
-
-	// close the stream
-	farewell, err := stream.CloseAndRecv()
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	log.Println("server says: ", farewell)
 }
 
 // Function which returns a true boolean if the connection to the server is ready, and false if it's not.
