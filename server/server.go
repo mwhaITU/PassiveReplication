@@ -22,8 +22,9 @@ type Server struct {
 	port                             string // Not required but useful if your server needs to know what port it's listening to
 
 	isPrimary      bool
-	servers        []Server
-	incrementValue int64      // value that clients can increment.
+	conns          []*grpc.ClientConn
+	incrementValue int64 // value that clients can increment.
+	timeSinceBeat  int32
 	mutex          sync.Mutex // used to lock the server to avoid race conditions.
 }
 
@@ -75,6 +76,15 @@ func launchServer() {
 		name:           *serverName,
 		port:           *port,
 		incrementValue: 0, // gives default value, but not sure if it is necessary
+		isPrimary:      *port == "5400",
+	}
+
+	if server.isPrimary {
+		log.Printf("I AM PRIMARY!!!")
+		go server.SendHeartbeats()
+	} else {
+		log.Printf("I am secondary...")
+		go server.CheckForHeartbeat()
 	}
 
 	gRPC.RegisterTemplateServer(grpcServer, server) //Registers the server to the gRPC server.
@@ -87,12 +97,12 @@ func launchServer() {
 			{Address: "localhost:5403"},
 		}
 		// Dial the secondary servers
-		conns, err := DialSecondaryServers(secondaryServers)
+		server.conns, err = DialSecondaryServers(secondaryServers)
 		if err != nil {
 			log.Fatal(err)
 		}
 		defer func() {
-			for _, conn := range conns {
+			for _, conn := range server.conns {
 				conn.Close()
 			}
 		}()
@@ -135,6 +145,80 @@ func DialSecondaryServers(secondaryServers []SecondaryServer) ([]*grpc.ClientCon
 	return conns, nil
 }
 
+func (s *Server) SendHeartbeat(ctx context.Context, Amount *gRPC.Amount) (*gRPC.Ack, error) {
+	for i, conn := range s.conns {
+		currentServer := gRPC.NewTemplateClient(conn)
+		ack, err := currentServer.ReceiveHeartbeat(context.Background(), Amount)
+		if err != nil {
+			log.Printf("Client %s: no response from the server, attempting to reconnect", Amount.GetClientName())
+			log.Println(err)
+			continue
+		}
+		// check if the server has handled the request correctly
+		if ack.NewValue >= Amount.GetValue() {
+			fmt.Printf("Success, the new value is now %d\n on secondary server %v", ack.NewValue, i+1)
+			fmt.Println()
+		} else {
+			// something could be added here to handle the error
+			// but hopefully this will never be reached
+			fmt.Printf("Oh no something went wrong on server %v :(", i+1)
+			fmt.Println()
+		}
+	}
+	return &gRPC.Ack{NewValue: s.incrementValue}, nil
+}
+
+func (s *Server) SendHeartbeats() {
+	for {
+		Amount := gRPC.Amount{
+			ClientName: *serverName,
+			Value:      s.incrementValue,
+		}
+		s.SendHeartbeat(context.Background(), &Amount)
+		time.Sleep(time.Second * 2)
+	}
+}
+
+func (s *Server) ReceiveHeartbeat(ctx context.Context, Amount *gRPC.Amount) (*gRPC.Ack, error) {
+	s.timeSinceBeat = 0
+	if Amount.GetValue() != s.incrementValue {
+		s.incrementValue = Amount.GetValue()
+		log.Printf("New value is %v", s.incrementValue)
+	}
+	return &gRPC.Ack{NewValue: s.incrementValue}, nil
+}
+
+func (s *Server) CheckForHeartbeat() {
+	for {
+		if s.timeSinceBeat >= 10 {
+			StartElection()
+		}
+		s.timeSinceBeat += 1
+		time.Sleep(time.Second * 1)
+	}
+}
+
+func StartElection() {
+
+}
+
+// ChangeServerPort changes the port that a server is listening on
+func ChangeServerPort(server *grpc.Server, newPort int) error {
+	// Stop the server
+	server.Stop()
+
+	// Create a new listener on the new port
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", newPort))
+	if err != nil {
+		return err
+	}
+
+	// Start the server on the new listener
+	go server.Serve(listener)
+
+	return nil
+}
+
 // The method format can be found in the pb.go file. If the format is wrong, the server type will give an error.
 func (s *Server) Increment(ctx context.Context, Amount *gRPC.Amount) (*gRPC.Ack, error) {
 	// locks the server ensuring no one else can increment the value at the same time.
@@ -145,5 +229,6 @@ func (s *Server) Increment(ctx context.Context, Amount *gRPC.Amount) (*gRPC.Ack,
 	// increments the value by the amount given in the request,
 	// and returns the new value.
 	s.incrementValue += int64(Amount.GetValue())
+	log.Printf("New value is %v", s.incrementValue)
 	return &gRPC.Ack{NewValue: s.incrementValue}, nil
 }

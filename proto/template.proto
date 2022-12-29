@@ -4,12 +4,20 @@ option go_package = "github.com/mwhaITU/PassiveReplication/proto";
 
 package proto;
 
+//protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative proto/template.proto
+
 // The template service definition.
 // you can call it whatever you want
 service Template
 {
     //one message is sent and one is recieved
     rpc Increment (Amount) returns (Ack);
+
+    //Receives heartbeat and updates server's amount to the received amount if need be
+    rpc ReceiveHeartbeat (Amount) returns (Ack);
+
+    //Sends heartbeat with current amount so secondary servers can update
+    rpc SendHeartbeat (Amount) returns (Ack);
 }
 
 //Amount is a type containing a string and int. They are intialized as the first and second parameter value.
