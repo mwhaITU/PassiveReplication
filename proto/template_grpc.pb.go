@@ -20,9 +20,11 @@ const _ = grpc.SupportPackageIsVersion7
 type TemplateClient interface {
 	// one message is sent and one is recieved
 	Increment(ctx context.Context, in *Amount, opts ...grpc.CallOption) (*Ack, error)
-	// Sends heartbeat with current amount so secondary servers can update
+	// Receives heartbeat and updates server's amount to the received amount if need be
 	ReceiveHeartbeat(ctx context.Context, in *Amount, opts ...grpc.CallOption) (*Ack, error)
+	// Sends heartbeat with current amount so secondary servers can update
 	SendHeartbeat(ctx context.Context, in *Amount, opts ...grpc.CallOption) (*Ack, error)
+	GetIdFromServer(ctx context.Context, in *Ack, opts ...grpc.CallOption) (*Ack, error)
 }
 
 type templateClient struct {
@@ -60,15 +62,26 @@ func (c *templateClient) SendHeartbeat(ctx context.Context, in *Amount, opts ...
 	return out, nil
 }
 
+func (c *templateClient) GetIdFromServer(ctx context.Context, in *Ack, opts ...grpc.CallOption) (*Ack, error) {
+	out := new(Ack)
+	err := c.cc.Invoke(ctx, "/proto.Template/GetIdFromServer", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TemplateServer is the server API for Template service.
 // All implementations must embed UnimplementedTemplateServer
 // for forward compatibility
 type TemplateServer interface {
 	// one message is sent and one is recieved
 	Increment(context.Context, *Amount) (*Ack, error)
-	// Sends heartbeat with current amount so secondary servers can update
+	// Receives heartbeat and updates server's amount to the received amount if need be
 	ReceiveHeartbeat(context.Context, *Amount) (*Ack, error)
+	// Sends heartbeat with current amount so secondary servers can update
 	SendHeartbeat(context.Context, *Amount) (*Ack, error)
+	GetIdFromServer(context.Context, *Ack) (*Ack, error)
 	mustEmbedUnimplementedTemplateServer()
 }
 
@@ -84,6 +97,9 @@ func (UnimplementedTemplateServer) ReceiveHeartbeat(context.Context, *Amount) (*
 }
 func (UnimplementedTemplateServer) SendHeartbeat(context.Context, *Amount) (*Ack, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SendHeartbeat not implemented")
+}
+func (UnimplementedTemplateServer) GetIdFromServer(context.Context, *Ack) (*Ack, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetIdFromServer not implemented")
 }
 func (UnimplementedTemplateServer) mustEmbedUnimplementedTemplateServer() {}
 
@@ -152,6 +168,24 @@ func _Template_SendHeartbeat_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Template_GetIdFromServer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Ack)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TemplateServer).GetIdFromServer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/proto.Template/GetIdFromServer",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TemplateServer).GetIdFromServer(ctx, req.(*Ack))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Template_ServiceDesc is the grpc.ServiceDesc for Template service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -170,6 +204,10 @@ var Template_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SendHeartbeat",
 			Handler:    _Template_SendHeartbeat_Handler,
+		},
+		{
+			MethodName: "GetIdFromServer",
+			Handler:    _Template_GetIdFromServer_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

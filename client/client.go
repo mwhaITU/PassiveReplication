@@ -86,11 +86,6 @@ func parseInput() {
 		}
 		input = strings.TrimSpace(input) //Trim input
 
-		if !conReady(server) {
-			log.Printf("Client %s: something was wrong with the connection to the server :(", *clientsName)
-			continue
-		}
-
 		//Convert string to int64, return error if the int is larger than 32bit or not a number
 		val, err := strconv.ParseInt(input, 10, 64)
 		if err != nil {
@@ -112,6 +107,7 @@ func incrementVal(val int64) {
 	if err != nil {
 		log.Printf("Client %s: no response from the server, attempting to reconnect", *clientsName)
 		log.Println(err)
+		return
 	}
 
 	// check if the server has handled the request correctly

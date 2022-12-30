@@ -1,16 +1,22 @@
 package main
 
+// TODO:
+// Terms - what to do when they split up?
+// Bully algorithm? - Make all nodes know of each other
 import (
 	"context"
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
 	// this has to be the same as the go.mod module,
 	// followed by the path to the folder the proto file is in.
+
 	gRPC "github.com/mwhaITU/PassiveReplication/proto"
 
 	"google.golang.org/grpc"
@@ -21,15 +27,18 @@ type Server struct {
 	name                             string // Not required but useful if you want to name your server
 	port                             string // Not required but useful if your server needs to know what port it's listening to
 
+	id             int32
 	isPrimary      bool
 	conns          []*grpc.ClientConn
+	otherServers   []OtherServer
 	incrementValue int64 // value that clients can increment.
 	timeSinceBeat  int32
+	term           int32
 	mutex          sync.Mutex // used to lock the server to avoid race conditions.
 }
 
 // Connection to a secondary server
-type SecondaryServer struct {
+type OtherServer struct {
 	Address string
 	Conn    *grpc.ClientConn
 }
@@ -38,6 +47,7 @@ type SecondaryServer struct {
 // to use a flag then just add it as an argument when running the program.
 var serverName = flag.String("name", "default", "Senders name") // set with "-name <name>" in terminal
 var port = flag.String("port", "5400", "Server port")           // set with "-port <port>" in terminal
+var grpcServer = grpc.NewServer()
 
 func main() {
 
@@ -48,7 +58,7 @@ func main() {
 	fmt.Println(".:server is starting:.")
 
 	// starts a goroutine executing the launchServer method.
-	go launchServer()
+	go launchServer(*serverName, *port, 0, 0)
 
 	// This makes sure that the main method is "kept alive"/keeps running
 	for {
@@ -56,27 +66,31 @@ func main() {
 	}
 }
 
-func launchServer() {
-	log.Printf("Server %s: Attempts to create listener on port %s\n", *serverName, *port)
+func launchServer(serverName string, port string, newValue int64, newTerm int32) {
+	log.Printf("Server %s: Attempts to create listener on port %s\n", serverName, port)
 
 	// Create listener tcp on given port or default port 5400
-	list, err := net.Listen("tcp", fmt.Sprintf("localhost:%s", *port))
+	list, err := net.Listen("tcp", fmt.Sprintf("localhost:%s", port))
 	if err != nil {
-		log.Printf("Server %s: Failed to listen on port %s: %v", *serverName, *port, err) //If it fails to listen on the port, run launchServer method again with the next value/port in ports array
+		log.Printf("Server %s: Failed to listen on port %s: %v", serverName, port, err) //If it fails to listen on the port, run launchServer method again with the next value/port in ports array
 		return
 	}
+
+	convertedId, err := strconv.Atoi(string(port[len(port)-1:]))
 
 	// makes gRPC server using the options
 	// you can add options here if you want or remove the options part entirely
 	var opts []grpc.ServerOption
-	grpcServer := grpc.NewServer(opts...)
+	grpcServer = grpc.NewServer(opts...)
 
 	// makes a new server instance using the name and port from the flags.
 	server := &Server{
-		name:           *serverName,
-		port:           *port,
-		incrementValue: 0, // gives default value, but not sure if it is necessary
-		isPrimary:      *port == "5400",
+		name:           serverName,
+		port:           port,
+		incrementValue: newValue,
+		term:           newTerm,
+		isPrimary:      port == "5400",
+		id:             int32(convertedId),
 	}
 
 	if server.isPrimary {
@@ -89,26 +103,28 @@ func launchServer() {
 
 	gRPC.RegisterTemplateServer(grpcServer, server) //Registers the server to the gRPC server.
 
-	if server.isPrimary {
-		// List of secondary servers
-		secondaryServers := []SecondaryServer{
-			{Address: "localhost:5401"},
-			{Address: "localhost:5402"},
-			{Address: "localhost:5403"},
+	// List of other servers
+	server.otherServers = []OtherServer{}
+	for i := 0; i < 4; i++ {
+		// If last digit in the server's port is not equal to i, we add it to the server's other servers
+		if string(port[len(port)-1:]) != strconv.Itoa(i) {
+			server.otherServers = append(server.otherServers,
+				OtherServer{Address: "localhost:540" + strconv.Itoa(i)})
 		}
-		// Dial the secondary servers
-		server.conns, err = DialSecondaryServers(secondaryServers)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer func() {
-			for _, conn := range server.conns {
-				conn.Close()
-			}
-		}()
 	}
 
-	log.Printf("Server %s: Listening on port %s\n", *serverName, *port)
+	// Dial the secondary servers
+	server.conns, err = DialOtherServers(server.otherServers)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		for _, conn := range server.conns {
+			conn.Close()
+		}
+	}()
+
+	log.Printf("Server %s: Listening on port %s\n", serverName, port)
 
 	if err := grpcServer.Serve(list); err != nil {
 		log.Fatalf("failed to serve %v", err)
@@ -117,7 +133,7 @@ func launchServer() {
 }
 
 // Dial a secondary server and return the connection
-func DialSecondaryServer(address string) (*grpc.ClientConn, error) {
+func DialOtherServer(address string) (*grpc.ClientConn, error) {
 	// Set up a connection to the server
 	conn, err := grpc.Dial(address, grpc.WithInsecure())
 	if err != nil {
@@ -128,12 +144,12 @@ func DialSecondaryServer(address string) (*grpc.ClientConn, error) {
 }
 
 // Dial all secondary servers and return the connections
-func DialSecondaryServers(secondaryServers []SecondaryServer) ([]*grpc.ClientConn, error) {
-	conns := make([]*grpc.ClientConn, len(secondaryServers))
+func DialOtherServers(OtherServers []OtherServer) ([]*grpc.ClientConn, error) {
+	conns := make([]*grpc.ClientConn, len(OtherServers))
 
-	for i, server := range secondaryServers {
+	for i, server := range OtherServers {
 		// Dial the secondary server
-		conn, err := DialSecondaryServer(server.Address)
+		conn, err := DialOtherServer(server.Address)
 		if err != nil {
 			return nil, err
 		}
@@ -146,12 +162,11 @@ func DialSecondaryServers(secondaryServers []SecondaryServer) ([]*grpc.ClientCon
 }
 
 func (s *Server) SendHeartbeat(ctx context.Context, Amount *gRPC.Amount) (*gRPC.Ack, error) {
+	Amount.Term = s.term
 	for i, conn := range s.conns {
 		currentServer := gRPC.NewTemplateClient(conn)
 		ack, err := currentServer.ReceiveHeartbeat(context.Background(), Amount)
 		if err != nil {
-			log.Printf("Client %s: no response from the server, attempting to reconnect", Amount.GetClientName())
-			log.Println(err)
 			continue
 		}
 		// check if the server has handled the request correctly
@@ -185,37 +200,69 @@ func (s *Server) ReceiveHeartbeat(ctx context.Context, Amount *gRPC.Amount) (*gR
 		s.incrementValue = Amount.GetValue()
 		log.Printf("New value is %v", s.incrementValue)
 	}
+	if Amount.GetTerm() > s.term {
+		s.term = Amount.GetTerm()
+	}
 	return &gRPC.Ack{NewValue: s.incrementValue}, nil
 }
 
 func (s *Server) CheckForHeartbeat() {
+	s.timeSinceBeat = 0
 	for {
-		if s.timeSinceBeat >= 10 {
-			StartElection()
+		rand.Seed(time.Now().UnixNano())
+		if s.timeSinceBeat >= 5 {
+			go StartElection(s)
+			break
 		}
 		s.timeSinceBeat += 1
+		log.Println(s.timeSinceBeat)
 		time.Sleep(time.Second * 1)
 	}
 }
 
-func StartElection() {
-
+func StartElection(s *Server) {
+	log.Printf("Started an election!")
+	myAck := &gRPC.Ack{
+		NewValue:    s.incrementValue,
+		SenderValue: s.id,
+		Term:        s.term,
+	}
+	for i, conn := range s.conns {
+		currentServer := gRPC.NewTemplateClient(conn)
+		ack, err := currentServer.GetIdFromServer(context.Background(), myAck)
+		if err != nil {
+			log.Printf("Client %d: no response from the server, attempting to reconnect", i+1)
+			log.Println(err)
+			continue
+		}
+		if ack.SenderValue > s.id {
+			log.Printf("Found higher ID - checking for heartbeat")
+			go s.CheckForHeartbeat()
+			return
+		}
+	}
+	s.BecomePrimary()
 }
 
-// ChangeServerPort changes the port that a server is listening on
-func ChangeServerPort(server *grpc.Server, newPort int) error {
-	// Stop the server
-	server.Stop()
-
-	// Create a new listener on the new port
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", newPort))
-	if err != nil {
-		return err
+func (s *Server) GetIdFromServer(ctx context.Context, Ack *gRPC.Ack) (*gRPC.Ack, error) {
+	ack := &gRPC.Ack{
+		NewValue:    s.incrementValue,
+		SenderValue: s.id,
+		Term:        s.term,
 	}
+	return ack, nil
+}
 
-	// Start the server on the new listener
-	go server.Serve(listener)
+func (s *Server) BecomePrimary() {
+	s.term += 1
+	ChangeServerPortAndRelaunch(s, "5400")
+}
 
+// ChangeServerPort changes the port that a server is listening on and relaunch the server
+func ChangeServerPortAndRelaunch(s *Server, newPort string) error {
+	log.Printf("Election won. Relaunching on port %s!", newPort)
+	grpcServer.Stop()
+	go launchServer("default", newPort, s.incrementValue, s.term)
 	return nil
 }
 

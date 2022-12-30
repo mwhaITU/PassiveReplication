@@ -18,14 +18,19 @@ service Template
 
     //Sends heartbeat with current amount so secondary servers can update
     rpc SendHeartbeat (Amount) returns (Ack);
+
+    rpc GetIdFromServer (Ack) returns (Ack);
 }
 
 //Amount is a type containing a string and int. They are intialized as the first and second parameter value.
 message Amount {
     string clientName = 1;
     int64 value = 2;
+    int32 term = 3;
 }
 
 message Ack {
     int64 newValue = 1;
+    int32 senderValue = 2;
+    int32 term = 3;
 }
